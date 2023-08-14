@@ -1,0 +1,365 @@
+---
+title: "HR Analytics"
+output: html_document
+date: '2023-08-10'
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Understand the business scenario and problem
+
+The HR department at Salifort Motors wants to take some initiatives to improve employee satisfaction levels at the company. They collected data from employees, but now they don’t know what to do with it. They refer to you as a data analytics professional and ask you to provide data-driven suggestions based on your understanding of the data. They have the following question: what’s likely to make the employee leave the company?
+
+The goals in this project are to analyze the data collected by the HR department and to build a model that predicts whether or not an employee will leave the company. 
+
+```{r include=FALSE}
+library(tidyverse)
+library(plotly)
+library(ranger)
+library(vip)
+library(broom)
+
+#Load the data, rename columns and make names more consistent
+df <- read_csv("https://raw.githubusercontent.com/Nikiboy26/HR-Analytics/main/HR_data.csv")%>%
+  rename_all(tolower)%>%
+  rename("tenure" = "time_spend_company",
+         'monthly_hours' = 'average_montly_hours',
+         'satisfaction' = 'satisfaction_level')
+
+#Check for NA's
+colSums(is.na(df)) #No missing values in the data found
+
+#Check for duplicates
+sum(duplicated(df)) #3008 rows are duplicated
+#That is 20% of the data. Probability of having exact duplicates by chance is very small
+# The best option is to remove duplicates
+#remove duplicates
+df1 <- df %>% 
+  distinct()
+
+```
+
+
+### 1.Data Exploration
+
+In this [dataset](https://www.kaggle.com/datasets/mfaisalqureshi/hr-analytics-and-job-prediction?select=HR_comma_sep.csv), there are 14,999 rows, 10 columns, and these variables: 
+
+Variable  |Description |
+-----|-----| 
+satisfaction_level|Employee-reported job satisfaction level [0&ndash;1]|
+last_evaluation|Score of employee's last performance review [0&ndash;1]|
+number_project|Number of projects employee contributes to|
+average_monthly_hours|Average number of hours employee worked per month|
+time_spend_company|How long the employee has been with the company (years)
+Work_accident|Whether or not the employee experienced an accident while at work
+left|Whether or not the employee left the company
+promotion_last_5years|Whether or not the employee was promoted in the last 5 years
+Department|The employee's department
+salary|The employee's salary (U.S. dollars)
+
+### 2. Data Exploration
+After the data cleaning process there are 11.991 rows in the dataset.\
+Current employees: 10.000\
+People left: 1.991 
+
+#### Data Visualizaion
+Let's start analyzing the data by plotting satisfaction level on the histogram to see if the are any patterns.
+```{r echo=FALSE}
+plot_ly(data = df1, x = ~satisfaction, color = ~factor(left, labels = c("stayed", "left")), 
+                colors = c('#003f5c','#ffa600')) %>%
+  add_histogram(bingroup = 1) %>%
+  layout(title = "Job Satisfaction Histogram",
+         xaxis = list(title = "Satisfaction"),
+         yaxis = list(title = "Frequency"),barmode = "overlay")
+```
+
+Here we can see that a lot of people who were not satisfied with their job left the company, which is not surprising.
+However we can observe a group of people who have a high satisfaction level (.72 and above) who left the company. This means there are other factors that are worth exploring. Now let's focus on this group of people with high satisfaction levels.
+
+\
+
+```{r echo = FALSE}
+df1%>%
+  filter(satisfaction > .72)%>%
+  group_by(left)%>%
+  count(tenure)%>%
+  plot_ly(x = ~tenure, y = ~n, color = ~factor(left, labels = c("stayed", "left")),
+          colors = c('#003f5c','#ffa600'),
+          type = 'bar')%>%
+  layout(title = "Employees scoring .72 and higher on Satisfaction Survey ",
+         xaxis = list(title = "Tenure"),
+         yaxis = list(title = ""))
+```
+
+The observation that employees who are satisfied with their job tend to leave the company after reaching a 5-year tenure mark is interesting and suggests the presence of potential underlying reasons. 
+Some possible explanations and strategies that organizations might consider to address this phenomenon:
+
+ - Career Growth Stagnation: Employees might feel that their career growth has become stagnant within the organization after a certain point, leading them to seek new opportunities elsewhere
+ - Desire for New Challenges: Satisfied employees might feel that they have achieved what they wanted in their current role and are now seeking new challenges and learning opportunities that they believe they won't find within the company.
+
+Now let's see how many of those who decided to leave at the 5-6 years tenure mark got any promotions within the past 5 years and what their salaries look like. 
+
+```{r echo=FALSE}
+df1%>%
+  filter(satisfaction > .72)%>%
+  filter(tenure > 4 & tenure < 7)%>%
+  group_by(left)%>%
+  count(promotion_last_5years)%>%
+  plot_ly(x = ~factor(promotion_last_5years, labels = c("No", "Yes")), y =~n, color = ~factor(left, labels = c("stayed", "left")),
+          colors = c('#003f5c','#ffa600'),
+          type = 'bar')%>%
+  layout(xaxis = list(title = "Promoted in the Last 5 Years"))
+```
+
+All of those who left had zero promotions while working for the company. And how their salaries look like?
+
+```{r echo = FALSE}
+df1%>%
+  filter(satisfaction > .72)%>%
+  filter(tenure > 4 & tenure < 7)%>%
+  plot_ly(x = ~salary, color = ~factor(left, labels = c("stayed", "left")),
+          colors = c('#003f5c','#ffa600'))%>%
+  add_histogram()%>%
+  layout(xaxis = list(title = "Salary"))
+
+```
+
+Here we can see that that while job satisfaction is important, compensation and benefits are also crucial. After a certain time, employees might feel the need for better compensation packages and benefits that reflect their experience and contributions. \
+I recommend to the management to look into what growth opportunities they provide. Implementing clear career progression plans and offer opportunities for skill development, promotions, and new challenges can motivate employees to stay longer.
+\
+
+Another possible reason might be overworking. Let's see the average hours and number of projects people are working with.
+
+```{r echo=FALSE}
+ggplot(df1, aes(x = monthly_hours, y = as.factor(number_project), fill = factor(left,labels = c('stayed','left')))) +
+  geom_boxplot() +
+  scale_y_discrete(limits = rev(levels(factor(df1$number_project)))) +
+  coord_flip() +
+  labs(title = "Monthly hours by number of projects", x = "Average Monthly Hours", y = "Number of Projects") +
+  theme_minimal() +
+  scale_fill_manual(values = c('stayed' = '#1f77b4', 'left' = '#ff7f0e'), name = NULL)
+
+```
+
+We can observe several things here:
+
+1. There are two groups of employees who left the company: (A) those who worked considerably less than their peers with the same number of projects, and (B) those who worked much more. Of those in group A, it's possible that they were fired. It's also possible that this group includes employees who had already given their notice and were assigned fewer hours because they were already on their way out the door. For those in group B, it's reasonable to infer that they probably quit. The folks in group B likely contributed a lot to the projects they worked in; they might have been the largest contributors to their projects. 
+
+2. Everyone with seven projects left the company, and the interquartile ranges of this group and those who left with six projects was ~255&ndash;295 hours/week&mdash;much more than any other group. 
+
+3. The optimal number of projects for employees to work on seems to be 3&ndash;4. The ratio of left/stayed is very small for these cohorts.
+
+4. If you assume a work week of 40 hours and two weeks of vacation per year, then the average number of working hours per month of employees working Monday&ndash;Friday `= 50 weeks * 40 hours per week / 12 months = 166.67 hours per month`. This means that, aside from the employees who worked on two projects, every group&mdash;even those who didn't leave the company&mdash;worked considerably more hours than this. It seems that employees here are overworked.
+
+\
+Next, let's examine whether employees who worked very long hours were promoted in the last five years.
+```{r echo = FALSE}
+df1%>%
+  plot_ly(x = ~monthly_hours, y = ~factor(promotion_last_5years, labels = c('No','Yes')), 
+          color = ~factor(left, labels = c("stayed", "left")),
+          colors = c('#003f5c','#ffa600'),
+          type = 'scatter',
+          mode = 'markers',  # Set mode to 'markers' for scatter plot
+          marker = list(
+            opacity = 0.3)
+  )%>%
+  layout(xaxis = list(title = "Average Monthly Hours"),
+         yaxis = list(title = "Promoted"))
+
+
+```
+
+The plot above shows the following:
+
+- very few employees who were promoted in the last five years left
+- very few employees who worked the most hours were promoted
+- all of the employees who left were working the longest hours  
+
+
+### Insights 
+It appears that employees are leaving the company as a result of poor management. Leaving is tied to longer working hours, many projects, and generally lower satisfaction levels. It can be ungratifying to work long hours and not receive promotions or good evaluation scores.
+There's a sizable group of employees at this company who are probably burned out. It also appears that if an employee has spent more than six years at the company, they tend not to leave.
+ 
+### Modeling 
+
+The goal is to predict whether an employee leaves the company, which is a categorical outcome variable. So this task involves classification. More specifically, this involves binary classification, since the outcome variable left can be either 1 (indicating employee left) or 0 (indicating employee didn't leave).
+
+Since the variable is categorical, this task can be solved with a Tree-based Machine Learning model. For this particular case I'll use Random Forest.
+
+```{r echo=FALSE}
+df1$left <- factor(df1$left)
+
+# TRAIN TEST SPLIT 
+set.seed(150)
+rows <- sample(nrow(df1))
+# Randomly order data
+shuffled_df <- df1[rows,]
+# Determine row to split on: split
+split <- round(nrow(df1) * .80)
+# Create train
+train <- shuffled_df[1:split,]
+# Create test
+test <- shuffled_df[(split +1):nrow(shuffled_df),]
+```
+
+```{r include=FALSE}
+library(tidymodels)
+library(rpart)
+
+spec <- rand_forest() %>%
+  set_mode("classification") %>%
+  set_engine('ranger', importance = 'impurity')
+# Train the forest
+model <- spec %>%
+  fit(left ~.,
+      data = train)
+
+predictions <- predict(model,
+                       new_data = test, type = 'class')
+# Add the true outcomes
+predictions_combined <- predictions %>% 
+  mutate(true_class = test$left)
+# The confusion matrix
+matrix <- conf_mat(data = predictions_combined,
+                         estimate = .pred_class,
+                         truth = true_class)
+
+```
+
+#### Confusion Matrix and Accuracy
+```{r echo = FALSE}
+
+autoplot(matrix, type = "heatmap")
+# Get accuracy of the model 
+acc_auto <- accuracy(predictions_combined,
+                     estimate = .pred_class, 
+                     truth = true_class)
+
+acc_auto$.estimate
+```
+The model predicts more false positives than false negatives, which means that some employees may be identified as at risk of quitting or getting fired, when that's actually not the case. But this is still a very strong model.
+
+The model has very high accuracy which can lead me to thinking about some data leakage in the dataset.\
+It's very likely that company will not have satisfactory level data on every employee.
+It's also possible that the average_monthly_hours column is a source of some data leakage. If employees have already decided upon quitting, or have already been identified by management as people to be fired, they may be working fewer hours.
+The first round of decision tree and random forest models included all variables as features. This next round will incorporate feature engineering to build improved models.
+
+#### Feature Engineering
+If 166.67 is approximately the average number of monthly hours for someone who works 50 weeks per year, 5 days per week, 8 hours per day.
+We can define being overworked as working more than 180 hours per month on average and use this categorical variable insted of monthly hours for the new model.
+
+```{r echo=FALSE}
+df_model <- df1%>%
+  select(-satisfaction)#Remove satisfactory level information
+
+#summary(df_model$monthly_hours) #Check the average hours in the dataset
+
+df_model <- df_model%>%
+  mutate(overworked = monthly_hours)%>%
+  mutate(overworked = case_when(
+    overworked < 180 ~ 0,
+    overworked >= 180 ~ 1
+  ))%>%
+  select(-monthly_hours)
+
+```
+
+```{r include=FALSE}
+### RANDOM FOREST ROUND TWO ##############################################
+set.seed(42)
+rows1 <- sample(nrow(df_model))
+# Randomly order data
+shuffled_df1 <- df_model[rows,]
+# Determine row to split on: split
+split1 <- round(nrow(df_model) * .80)
+# Create train
+train1 <- shuffled_df1[1:split1,]
+# Create test
+test1 <- shuffled_df1[(split1 +1):nrow(shuffled_df1),]
+
+spec1 <- rand_forest() %>%
+  set_mode("classification") %>%
+  set_engine('ranger', importance = 'impurity')
+# Train the forest
+model1 <- spec1 %>%
+  fit(left ~.,
+      data = train1)
+```
+
+### New Model
+I removed 'satisfaction level' column and used newly created variable 'overworked' instead of 'monthly hours'.
+
+#### Variable Importance
+```{r echo = FALSE}
+# Plot the variable importance
+vip::vip(model1, aesthetics =list(fill = '#003f5c')) + theme(panel.grid.major = element_blank(), 
+                                                            panel.grid.minor = element_blank(),
+                                                            panel.background = element_blank(), 
+                                                            axis.line = element_line(colour = "black"))
+
+
+# Generate predictions
+predictions1 <- predict(model1,
+                       new_data = test1, type = 'class')
+# Add the true outcomes
+predictions_combined1 <- predictions1 %>% 
+  mutate(true_class = test1$left)
+# The confusion matrix
+matrix1 <- conf_mat(data = predictions_combined1,
+                   estimate = .pred_class,
+                   truth = true_class)
+```
+
+The plot above shows that in this random forest model `number_project`, `tenure`, `last_evaluation`, and `overworked` have the highest importance, in that order. These variables are most helpful in predicting the outcome variable, `left`, and they are the same as the ones used by the decision tree model.
+
+#### Confusion Matrix and Accuracy
+```{r echo=FALSE}
+autoplot(matrix1, type = "heatmap")
+# Get accuracy of the model 
+acc_auto <- accuracy(predictions_combined,
+                     estimate = .pred_class, 
+                     truth = true_class)
+
+prec_auto <- precision(predictions_combined1,
+                       estimate = .pred_class, 
+                       truth = true_class)
+
+recall_auto <-recall(predictions_combined1,
+                     estimate = .pred_class, 
+                     truth = true_class)
+
+f1score <- f_meas(predictions_combined1,
+                  estimate = .pred_class, 
+                  truth = true_class)
+```
+
+
+#### Summary of model results
+
+```{r echo = FALSE}
+print(paste("Accuracy is:", round(acc_auto$.estimate, digits = 2)))
+print(paste("Precision is:", round(prec_auto$.estimate, digits = 2)))
+print(paste("Recall is:", round(recall_auto$.estimate, digits = 2)))
+print(paste("F1 Score is:", round(f1score$.estimate, digits = 2)))
+
+```
+
+### Conclusion, Recommendations, Next Steps
+
+The models and the feature importances extracted from the models confirm that employees at the company are overworked. 
+
+To retain employees, I recommend following steps:
+
+- Offer Growth Opportunities: Implement clear career progression plans and offer opportunities for skill development, promotions, and new challenges.
+- Consider promoting employees who have been with the company for at least four years
+- Cap the number of projects that employees can work on.
+- Make sure that overtime policies are clear for everybody. Reward for working longer hours, or don’t require them to do so.
+- Retention Incentives: Consider implementing retention incentives such as bonuses, stock options, or other benefits that kick in after a certain tenure, incentivizing employees to stay longer.
+- High evaluation scores should not be reserved for employees who work 200+ hours per month. Consider a proportionate scale for rewarding employees who contribute more/put in more effort.
+- Exit Interviews: Conduct exit interviews with departing employees to understand their reasons for leaving. This feedback can provide insights into potential areas for improvement.
+
+**Next Steps**
+
+It may be justified to still have some concern about data leakage. It could be prudent to consider how predictions change when `last_evaluation` is removed from the data. It's possible that evaluations aren't performed very frequently, in which case it would be useful to be able to predict employee retention without this feature. It's also possible that the evaluation score determines whether an employee leaves or stays, in which case it could be useful to pivot and try to predict performance score. The same could be said for satisfaction score. 
